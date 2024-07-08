@@ -1,0 +1,150 @@
+---
+title: "Riqueza de especies amenazadas (categorías CR, EN y VU de la Lista Roja) del orden Anura"
+author: "Irina Pérez Lescano"
+format: 
+  dashboard:
+    orientation: rows
+    theme: journal
+---
+
+```{r}
+#| label: carga-paquetes
+
+library(tidyverse)
+library(sf)
+library(DT)
+library(plotly)
+library(leaflet)
+library(leaflet.extras)
+library(leafem)
+```
+
+```{r}
+#| label: carga-datos
+
+# Registros de anfibios
+registro_anfibios <-
+  st_read("registros-anfibios.csv",
+    options = c(
+     "X_POSSIBLE_NAMES=decimalLongitude", 
+      "Y_POSSIBLE_NAMES=decimalLatitude"),
+    quiet = TRUE
+    )
+st_crs(registro_anfibios ) <- 4326
+
+# Especies de anfibios
+especies_anfibios <- 
+  read.csv("especies-anfibios.csv") 
+
+# Areas de conservacion
+areas_conservacion <- st_read("areas-conservacion.geojson", quiet = TRUE) |>
+  st_transform(4326)
+```
+
+```{r}
+#| label: union-conteo-anfibios
+
+union_anfibios <-
+  registro_anfibios |>
+  left_join(
+    dplyr:: select(especies_anfibios,species,iucnRedListCategory),
+    by = "species"
+  )
+  
+# Union anfibios y areas
+anfibios_union_areas <- 
+  st_join(
+    x = union_anfibios,
+    y = dplyr::select(areas_conservacion, nombre_ac),
+    join = st_within
+  )
+
+# Conteo 
+riqueza_especies_anfibios_areas <-
+  anfibios_union_areas |>
+  st_drop_geometry() |>
+  group_by(nombre_ac,iucnRedListCategory, order) |>
+  summarize(riqueza_especies_anfibios = n_distinct(species, na.rm = TRUE))
+
+# Filtro
+riqueza_especies_anura_areas <-
+  riqueza_especies_anfibios_areas |> 
+  filter(order == "Anura") 
+
+especies_anura_iucn  <-
+  riqueza_especies_anura_areas |>
+  filter(iucnRedListCategory == "CR" |
+           iucnRedListCategory == "EN" |
+           iucnRedListCategory == "VU") 
+
+areas_union_riqueza <-
+  left_join(
+    x = areas_conservacion,
+    y = dplyr::select(especies_anura_iucn, nombre_ac, riqueza_especies_anfibios),
+    by = "nombre_ac"
+  ) |>
+  replace_na(list(riqueza_especies_anfibios = 0))
+```
+
+```{r}
+#| label: mapa
+#| title: "Mapa de riqueza de especies amenazadas (categorías CR, EN y VU de la Lista Roja) del orden Anura (sapos y ranas) en áreas de conservación de Costa Rica"
+
+# Paleta de colores de riqueza de especies
+colores_riqueza_especies <-
+  colorNumeric(
+    palette = "Reds",
+    domain = areas_union_riqueza$riqueza_especies_anfibios,
+    na.color = "transparent"
+  )
+
+# Mapa leaflet
+leaflet() |>
+  setView(
+    lng = -84,
+    lat = 10,
+    zoom = 7) |>
+  addTiles(group = "Mapa general (OpenStreetMap)") |>
+  addProviderTiles(
+    providers$Esri.WorldImagery, 
+    group = "Imágenes satelitales (ESRI World Imagery)"
+  ) |> 
+  addPolygons(
+    data = areas_union_riqueza,
+    fillColor = ~ colores_riqueza_especies(areas_union_riqueza$riqueza_especies_anfibios),
+    fillOpacity = 0.8,
+    color = "black",
+    stroke = TRUE,
+    weight = 1.0,
+    popup = paste(
+      paste("<strong>Area de Coservación:</strong>", areas_union_riqueza$nombre_ac),
+      paste("<strong>Riqueza de especies amenazadas:</strong>", areas_union_riqueza$riqueza_especies_anfibios),
+      sep = '<br/>'
+    ),
+    group = "Riqueza de especies"
+  ) |>
+  addScaleBar(
+    position = "bottomleft", 
+    options = scaleBarOptions(imperial = FALSE)
+  ) |>    
+  addLegend(
+    position = "bottomleft",
+    pal = colores_riqueza_especies,
+    values = areas_union_riqueza$riqueza_especies_anfibios,
+    group = "Riqueza de especies",
+    title = "Riqueza de especies"
+  ) |> 
+  addLayersControl(
+    baseGroups = c(
+      "Mapa general (OpenStreetMap)", 
+      "Imágenes satelitales (ESRI World Imagery)"
+    ),
+    overlayGroups = c(
+      "Riqueza de especies amenazadas")
+  ) |>
+  addResetMapButton() |>
+  addSearchOSM() |>
+  addMouseCoordinates() |>
+  addFullscreenControl() |>
+  hideGroup("Registros de presencia") 
+```
